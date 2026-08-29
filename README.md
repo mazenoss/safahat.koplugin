@@ -5,7 +5,7 @@ the Hindawi Foundation's non-profit online library, directly from your
 e-reader.
 
 ## Install
-
+1. get the last version from [releases](https://github.com/mazenoss/safahat.koplugin/releases)
 1. Copy the whole `safahat.koplugin` folder (not just the files inside it)
    onto your device, into KOReader's `plugins` directory:
    - `koreader/plugins/safahat.koplugin/`
