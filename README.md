@@ -17,9 +17,7 @@ e-reader.
 - **Browse catalog** — shows the site's category list (all books + each
   subject with its book count, matching the site's own menu). Tap a
   category to see its books.
-- **Search** — type a keyword/title. Confirmed: this POSTs to the
-  site's real search form (`/layout/search/`, field name `keyword`),
-  not a guessed URL.
+- **Search** — type a keyword/title.
 - Tapping a book fetches its page and shows its title/author with a
   **Download EPUB** button.
 - After downloading, you're offered to open the book immediately.
