@@ -52,8 +52,10 @@ Also unconfirmed: pagination between pages within a category, if a
 category has more books than fit on one page (findNextPageUrl).
 
 Every page this plugin fetches is also saved as plain text under
-<download folder>/debug/, which is the fastest way to compare what it
-actually received against the patterns below.
+KOReader's data directory, in safahat_debug/ (see getDebugDir()) —
+kept separate from the download folder so debug files never clutter
+wherever your books end up. This is the fastest way to compare what
+the plugin actually received against the patterns below.
 --]]--
 
 local ButtonDialog = require("ui/widget/buttondialog")
@@ -113,10 +115,15 @@ local function absolutize(href)
     return href
 end
 
+-- Default download folder is the Kindle's own "documents" folder, so
+-- books downloaded here also show up in the stock Kindle library, not
+-- just inside KOReader. Still user-configurable via the plugin menu.
+local DEFAULT_DOWNLOAD_DIR = "/mnt/us/documents/"
+
 local function getDownloadDir()
     local dir = G_reader_settings:readSetting("safahat_download_dir")
     if not dir then
-        dir = DataStorage:getFullDataDir() .. "/safahat/"
+        dir = DEFAULT_DOWNLOAD_DIR
         G_reader_settings:saveSetting("safahat_download_dir", dir)
     end
     if lfs and not lfs.attributes(dir, "mode") then
@@ -125,15 +132,23 @@ local function getDownloadDir()
     return dir
 end
 
--- Saves raw fetched HTML to <download_dir>/debug/<name>.txt so it can be
+-- Debug dumps deliberately live in KOReader's own data directory, not
+-- inside the (user-facing, possibly Kindle-library) download folder,
+-- so they never clutter the place downloaded books show up.
+local function getDebugDir()
+    local dir = DataStorage:getFullDataDir() .. "/safahat_debug/"
+    if lfs and not lfs.attributes(dir, "mode") then
+        util.makePath(dir)
+    end
+    return dir
+end
+
+-- Saves raw fetched HTML to <debug dir>/<name>.txt so it can be
 -- inspected on-device or copied off the device, to fix parsing patterns
 -- that don't match the live site. Best-effort; failures are silent.
 local function dumpDebugHtml(name, content)
     local ok = pcall(function()
-        local dir = getDownloadDir() .. "debug/"
-        if lfs and not lfs.attributes(dir, "mode") then
-            util.makePath(dir)
-        end
+        local dir = getDebugDir()
         local f = io.open(dir .. name .. ".txt", "w")
         if f then
             f:write(content or "")
@@ -629,7 +644,7 @@ function Safahat:presentBookDetail(detail)
         },
         {
             {
-                text = _("Cancel"),
+                text = _("‹ Back"),
                 callback = function() UIManager:close(dialog) end,
             },
         },
@@ -694,6 +709,11 @@ function Safahat:browseCategories()
     end
 
     local item_table = {}
+    local menu
+    table.insert(item_table, {
+        text = _("‹ Back"),
+        callback = function() UIManager:close(menu) end,
+    })
     for _, cat in ipairs(cats) do
         local label = cat.name
         if cat.count then
@@ -707,7 +727,6 @@ function Safahat:browseCategories()
         })
     end
 
-    local menu
     menu = Menu:new{
         title = _("Safahat — التصنيفات"),
         item_table = item_table,
@@ -735,6 +754,11 @@ function Safahat:renderBookListPage(html, title)
     end
 
     local item_table = {}
+    local menu
+    table.insert(item_table, {
+        text = _("‹ Back"),
+        callback = function() UIManager:close(menu) end,
+    })
     for _, book in ipairs(books) do
         table.insert(item_table, {
             text = book.title,
@@ -752,7 +776,6 @@ function Safahat:renderBookListPage(html, title)
         })
     end
 
-    local menu
     menu = Menu:new{
         title = title or _("Safahat"),
         item_table = item_table,
@@ -811,7 +834,7 @@ function Safahat:promptSearch()
         buttons = {
             {
                 {
-                    text = _("Cancel"),
+                    text = _("‹ Back"),
                     callback = function() UIManager:close(dialog) end,
                 },
                 {
@@ -840,7 +863,7 @@ function Safahat:promptDownloadDir()
         buttons = {
             {
                 {
-                    text = _("Cancel"),
+                    text = _("‹ Back"),
                     callback = function() UIManager:close(dialog) end,
                 },
                 {
@@ -874,7 +897,6 @@ function Safahat:openHome()
                 {
                     text = _("Browse catalog"),
                     callback = safe(function()
-                        UIManager:close(dialog)
                         self:browseCategories()
                     end),
                 },
@@ -883,7 +905,6 @@ function Safahat:openHome()
                 {
                     text = _("Search"),
                     callback = safe(function()
-                        UIManager:close(dialog)
                         self:promptSearch()
                     end),
                 },
@@ -892,9 +913,14 @@ function Safahat:openHome()
                 {
                     text = _("Download folder…"),
                     callback = function()
-                        UIManager:close(dialog)
                         self:promptDownloadDir()
                     end,
+                },
+            },
+            {
+                {
+                    text = _("‹ Back"),
+                    callback = function() UIManager:close(dialog) end,
                 },
             },
         },
