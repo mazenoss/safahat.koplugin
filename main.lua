@@ -4,16 +4,20 @@ Safahat Library plugin for KOReader
 
 Lets you browse (by category) and search the free Arabic e-book
 catalog at https://www.safahat.org/ (published by the non-profit
-Hindawi Foundation), view a book's title/author, and download its
-EPUB straight onto your device.
+Hindawi Foundation), view a book's page (title, author, categories,
+word count, description) as a scrollable screen -- styled after the
+book-detail screen in github.com/ZlibraryKO/zlibrary.koplugin -- and
+download its EPUB straight onto your device.
 
-NOTE: there is deliberately no "view cover" feature. The site serves
+NOTE: there is deliberately no cover-image display. The site serves
 covers as SVG, and rendering an SVG through KOReader's built-in image
 viewer crashed the app on a real test device. That crash happens
 during KOReader's async paint pass rather than at widget construction
 time, so it can't be caught with pcall the way network/parsing errors
 elsewhere in this plugin are -- so the feature was removed rather than
-shipped behind a safety net that couldn't actually catch it.
+shipped behind a safety net that couldn't actually catch it. The book
+page (via TextViewer) only ever renders plain text, never images, to
+stay clear of that failure mode entirely.
 
 HOW IT WORKS / KNOWN LIMITATIONS
 ---------------------------------
@@ -25,10 +29,10 @@ live site:
   * the category sidebar shown on any /books/... listing page
     (parseCategories) — confirmed
   * a book's detail page, e.g. https://www.safahat.org/books/<id>/
-    (parseBookDetail) — confirmed, including the EPUB download link:
+    (parseBookDetail) — confirmed, including title, author,
+    categories, word count, description, and the EPUB download link:
         <a ... href="https://downloads.hindawi.org/books/<id>.epub"
-           ... id="epub">
-  * a category page's book grid (parseBookList), e.g.
+           ... id="epub">  * a category page's book grid (parseBookList), e.g.
         <li class="bookCover">
           <a href="/books/<id>/">
             <span class="button big">شاهد التفاصيل</span>
@@ -383,6 +387,22 @@ local function stripTags(s)
     return s
 end
 
+-- Like stripTags, but keeps paragraph breaks -- used for the book
+-- description, where multiple <p> paragraphs should stay visually
+-- separated rather than being collapsed into one line.
+local function stripTagsKeepParagraphs(s)
+    if not s then return "" end
+    s = s:gsub("</p>", "</p>\n\n")
+    s = s:gsub("<br%s*/?>", "\n")
+    s = s:gsub("<[^>]+>", " ")
+    s = s:gsub("&nbsp;", " ")
+    s = s:gsub("[ \t]+", " ")
+    s = s:gsub(" *\n *", "\n")
+    s = s:gsub("\n\n\n+", "\n\n")
+    s = s:gsub("^%s+", ""):gsub("%s+$", "")
+    return s
+end
+
 -- Tries several strategies to pull a title out of the HTML block
 -- belonging to one book (the block from just after its /books/<id>/
 -- link's opening tag up to its closing </a>). Returns "" if nothing
@@ -490,12 +510,22 @@ local function parseBookList(html)
 end
 
 -- Parses a single book's detail page (e.g. https://www.safahat.org/books/<id>/)
--- into { title, author, cover, epub_url }. Based on confirmed markup:
+-- into { title, author, cover, categories, word_count, description,
+-- epub_url }. Based on confirmed markup:
 --   <article class="book">
 --     <div class="cover"><img src="..."></div>
 --     <div class="details">
 --       <h2>Title</h2>
 --       <div class="author"><a href="...">Author</a></div>
+--       <ul class="tags">
+--         <li><a href="/books/categories/<slug>/">Category</a></li>
+--         <li><span>NNN كلمة</span></li>   -- word count, no link
+--       </ul>
+--       <div class="content">
+--         <div><p>...paragraph...</p><p>...paragraph...</p></div>
+--         <br>
+--         <div>legal/licensing note</div>
+--       </div>
 --   ...
 --   <div class="downloadBook">
 --     <a ... href="https://downloads.hindawi.org/books/<id>.epub" ... id="epub">
@@ -518,6 +548,31 @@ local function parseBookDetail(html, fallback)
     author = author and stripTags(author) or nil
     if author == "" then author = nil end
 
+    -- Category tags + word count both live in <ul class="tags">; the
+    -- word count is the one <li> with a bare <span> (no <a>).
+    local categories = {}
+    local word_count
+    local tags_block = html:match('<ul class="tags">(.-)</ul>')
+    if tags_block then
+        for cat in tags_block:gmatch('<a[^>]*>(.-)</a>') do
+            local c = stripTags(cat)
+            if c ~= "" then table.insert(categories, c) end
+        end
+        word_count = tags_block:match('<span>%s*(.-)%s*</span>')
+        if word_count then word_count = stripTags(word_count) end
+        if word_count == "" then word_count = nil end
+    end
+
+    -- Description + legal note: everything in <div class="content">
+    -- up to the following <div class="shareActions">, paragraph breaks
+    -- preserved.
+    local description
+    local content_block = html:match('<div class="content">(.-)<div class="shareActions">')
+    if content_block then
+        description = stripTagsKeepParagraphs(content_block)
+        if description == "" then description = nil end
+    end
+
     -- The EPUB link specifically (id="epub" in the confirmed markup);
     -- matching on the ".epub" extension directly is simpler and just
     -- as reliable, and doesn't depend on attribute order.
@@ -527,6 +582,9 @@ local function parseBookDetail(html, fallback)
         title = (title and title ~= "") and title or _("Untitled"),
         author = author,
         cover = cover,
+        categories = categories,
+        word_count = word_count,
+        description = description,
         epub_url = epub_url,
     }
 end
@@ -618,14 +676,76 @@ function Safahat:confirmDownload(detail)
     })
 end
 
--- Shows a book's info (title/author) with an action to download the
--- EPUB. (There used to also be a "View cover" button here, but the
--- site's covers are SVG, and rendering them through KOReader's image
--- viewer crashed on at least one real device/build -- and since that
+-- Shows a book's full info (title/author/categories/word count/
+-- description) as a scrollable "book page", with a Download EPUB
+-- action button alongside the built-in close button.
+--
+-- Uses KOReader's built-in TextViewer widget rather than a hand-built
+-- layout -- it's the same widget KOReader's own OPDS catalog browser
+-- uses to show a book's description, it's RTL-aware (important for
+-- Arabic), and it handles long/short text and scrolling on its own.
+-- This deliberately still doesn't render the cover image: the site's
+-- covers are SVG, and rendering one through KOReader's image viewer
+-- crashed on a real device/build during testing -- and since that
 -- crash happens during the async paint pass rather than at widget
--- construction time, it can't be caught with pcall from here. Removed
--- rather than leave a button that can crash the app.)
+-- construction time, it can't be caught with pcall from here, so the
+-- feature stays out rather than risk shipping something that can
+-- crash the app. TextViewer here only ever renders plain text.
 function Safahat:presentBookDetail(detail)
+    local lines = {}
+    if detail.author then
+        table.insert(lines, detail.author)
+    end
+    local meta = {}
+    if detail.categories and #detail.categories > 0 then
+        table.insert(meta, table.concat(detail.categories, " · "))
+    end
+    if detail.word_count then
+        table.insert(meta, detail.word_count)
+    end
+    if #meta > 0 then
+        table.insert(lines, table.concat(meta, "  —  "))
+    end
+    if #lines > 0 then
+        table.insert(lines, "") -- blank line before the description
+    end
+    if detail.description then
+        table.insert(lines, detail.description)
+    end
+
+    local ok, viewer_or_err = pcall(function()
+        local TextViewer = require("ui/widget/textviewer")
+        return TextViewer:new{
+            title = detail.title,
+            text = table.concat(lines, "\n"),
+            para_direction_rtl = true,
+            auto_para_direction = true,
+            buttons_table = {
+                {
+                    {
+                        text = _("Download EPUB"),
+                        callback = safe(function()
+                            self:confirmDownload(detail)
+                        end),
+                    },
+                },
+            },
+        }
+    end)
+
+    if ok and viewer_or_err then
+        UIManager:show(viewer_or_err)
+    else
+        -- Fall back to the simple dialog if TextViewer isn't available
+        -- or fails to build, so a book can always still be downloaded.
+        logger.warn("Safahat: TextViewer failed, falling back:", viewer_or_err)
+        self:presentBookDetailFallback(detail)
+    end
+end
+
+-- Minimal fallback for presentBookDetail, used only if TextViewer
+-- fails to construct. Same proven ButtonDialog approach used before.
+function Safahat:presentBookDetailFallback(detail)
     local title_lines = { detail.title }
     if detail.author then
         table.insert(title_lines, detail.author)
